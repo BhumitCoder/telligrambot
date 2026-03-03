@@ -9,6 +9,7 @@ const PRODUCTS_FILE = path.join(__dirname, "data", "products.json");
 const CHANNELS_FILE = path.join(__dirname, "data", "channels.json");
 const SCHEDULES_FILE = path.join(__dirname, "data", "schedules.json");
 const SUBSCRIBERS_FILE = path.join(__dirname, "data", "subscribers.json");
+const INTERVALS_FILE = path.join(__dirname, "data", "intervals.json");
 
 const log = (message, meta) => {
   if (meta === undefined) {
@@ -173,4 +174,39 @@ export async function addSubscribersBulk(channelIdNormalized, numbers) {
   await saveSubscribers(next);
   log("subscribers bulk add", { channelIdNormalized, requested: cleaned.length, inserted });
   return { requested: cleaned.length, inserted, skipped: cleaned.length - inserted };
+}
+
+export async function getIntervals() {
+  return readJsonArray(INTERVALS_FILE, "intervals");
+}
+
+export async function saveIntervals(intervals) {
+  await writeJsonArray(INTERVALS_FILE, "intervals", intervals);
+}
+
+export async function addInterval(intervalJob) {
+  const intervals = await getIntervals();
+  const next = [intervalJob, ...intervals];
+  await saveIntervals(next);
+  log("interval added", {
+    id: intervalJob.id,
+    everyMinutes: intervalJob.everyMinutes,
+    channels: intervalJob.channelIds.length,
+    products: intervalJob.productIds.length
+  });
+  return intervalJob;
+}
+
+export async function updateInterval(id, patch) {
+  const intervals = await getIntervals();
+  const index = intervals.findIndex((s) => s.id === id);
+  if (index < 0) {
+    log("interval update requested but not found", { id });
+    return null;
+  }
+  const updated = { ...intervals[index], ...patch, id: intervals[index].id };
+  intervals[index] = updated;
+  await saveIntervals(intervals);
+  log("interval updated", { id, status: updated.status, lastRunAt: updated.lastRunAt || "" });
+  return updated;
 }

@@ -8,13 +8,16 @@ import {
   addProduct,
   addSchedule,
   addSubscribersBulk,
+  addInterval,
   deleteChannel,
   deleteProduct,
   deleteSchedule,
   getChannels,
+  getIntervals,
   getProducts,
   getSubscribers,
   getSchedules,
+  updateInterval,
   updateProduct,
   updateSchedule
 } from "./store.js";
@@ -25,6 +28,8 @@ dotenv.config();
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
 const scheduleTimers = new Map();
+const intervalTimers = new Map();
+const intervalRunning = new Set();
 
 const log = (message, meta) => {
   if (meta === undefined) {
@@ -97,6 +102,12 @@ function parseBulkNumbers(input) {
   return { valid, invalid };
 }
 
+function normalizeIntervalMinutes(value) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes)) return 0;
+  return Math.floor(minutes);
+}
+
 function clearScheduleTimer(scheduleId) {
   const timer = scheduleTimers.get(scheduleId);
   if (timer) {
@@ -158,6 +169,84 @@ async function rehydrateSchedules() {
   for (const schedule of schedules) {
     if (schedule.status === "pending") {
       queueSchedule(schedule);
+    }
+  }
+}
+
+function clearIntervalTimer(intervalId) {
+  const timer = intervalTimers.get(intervalId);
+  if (timer) {
+    clearInterval(timer);
+    intervalTimers.delete(intervalId);
+  }
+}
+
+async function executeInterval(intervalId) {
+  if (intervalRunning.has(intervalId)) return;
+  intervalRunning.add(intervalId);
+  try {
+    const intervals = await getIntervals();
+    const intervalJob = intervals.find((s) => s.id === intervalId);
+    if (!intervalJob || intervalJob.status !== "active") {
+      clearIntervalTimer(intervalId);
+      return;
+    }
+
+    const allProducts = await getProducts();
+    const selected = allProducts.filter((p) => intervalJob.productIds.includes(p.id));
+    if (selected.length === 0) {
+      await updateInterval(intervalId, {
+        lastRunAt: new Date().toISOString(),
+        lastError: "No matching products found at run time",
+        sent: 0,
+        failed: 0
+      });
+      return;
+    }
+
+    let sent = 0;
+    let failed = 0;
+    for (const channelId of intervalJob.channelIds) {
+      const results = await sendProductsBulk(selected, { channelId });
+      sent += results.filter((x) => x.ok).length;
+      failed += results.filter((x) => !x.ok).length;
+    }
+
+    await updateInterval(intervalId, {
+      lastRunAt: new Date().toISOString(),
+      lastError: "",
+      sent,
+      failed
+    });
+  } catch (error) {
+    await updateInterval(intervalId, {
+      lastRunAt: new Date().toISOString(),
+      lastError: error instanceof Error ? error.message : String(error)
+    });
+  } finally {
+    intervalRunning.delete(intervalId);
+  }
+}
+
+function startIntervalTimer(intervalJob) {
+  if (!intervalJob || intervalJob.status !== "active") return;
+  clearIntervalTimer(intervalJob.id);
+  const everyMinutes = normalizeIntervalMinutes(intervalJob.everyMinutes);
+  if (everyMinutes < 1) return;
+  const timer = setInterval(() => {
+    executeInterval(intervalJob.id).catch((error) => {
+      log("interval execution failed", { intervalId: intervalJob.id, error: error instanceof Error ? error.message : String(error) });
+    });
+  }, everyMinutes * 60 * 1000);
+  intervalTimers.set(intervalJob.id, timer);
+  log("interval started", { intervalId: intervalJob.id, everyMinutes });
+}
+
+async function rehydrateIntervals() {
+  const intervals = await getIntervals();
+  for (const intervalJob of intervals) {
+    if (intervalJob.status === "active") {
+      startIntervalTimer(intervalJob);
     }
   }
 }
@@ -383,6 +472,66 @@ app.post("/api/send", async (req, res) => {
   });
 });
 
+app.get("/api/intervals", async (_req, res) => {
+  const intervals = await getIntervals();
+  return res.json({ ok: true, intervals });
+});
+
+app.post("/api/intervals", async (req, res) => {
+  const { productIds, channelIds, everyMinutes } = req.body ?? {};
+  if (!Array.isArray(productIds) || productIds.length === 0) {
+    return res.status(400).json({ ok: false, error: "productIds must be a non-empty array" });
+  }
+
+  if (!Array.isArray(channelIds) || channelIds.length === 0) {
+    return res.status(400).json({ ok: false, error: "channelIds must be a non-empty array" });
+  }
+
+  const minutes = normalizeIntervalMinutes(everyMinutes);
+  if (minutes < 1) {
+    return res.status(400).json({ ok: false, error: "everyMinutes must be at least 1" });
+  }
+
+  const intervalJob = {
+    id: crypto.randomUUID(),
+    productIds: [...new Set(productIds.map((x) => String(x || "").trim()).filter(Boolean))],
+    channelIds: [...new Set(channelIds.map((x) => String(x || "").trim()).filter(Boolean))],
+    everyMinutes: minutes,
+    status: "active",
+    createdAt: new Date().toISOString(),
+    lastRunAt: "",
+    lastError: "",
+    sent: 0,
+    failed: 0
+  };
+
+  if (intervalJob.productIds.length === 0 || intervalJob.channelIds.length === 0) {
+    return res.status(400).json({ ok: false, error: "Select at least one product and one channel" });
+  }
+
+  await addInterval(intervalJob);
+  startIntervalTimer(intervalJob);
+  return res.status(201).json({ ok: true, interval: intervalJob });
+});
+
+app.post("/api/intervals/:id/start", async (req, res) => {
+  const updated = await updateInterval(req.params.id, { status: "active", lastError: "" });
+  if (!updated) {
+    return res.status(404).json({ ok: false, error: "interval not found" });
+  }
+  startIntervalTimer(updated);
+  return res.json({ ok: true, interval: updated });
+});
+
+app.post("/api/intervals/:id/stop", async (req, res) => {
+  clearIntervalTimer(req.params.id);
+  const updated = await updateInterval(req.params.id, { status: "stopped" });
+  if (!updated) {
+    return res.status(404).json({ ok: false, error: "interval not found" });
+  }
+  return res.json({ ok: true, interval: updated });
+});
+
 app.get("/api/schedules", async (_req, res) => {
   const schedules = await getSchedules();
   res.json({ ok: true, schedules });
@@ -440,5 +589,8 @@ app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   rehydrateSchedules().catch((error) => {
     log("schedule rehydrate failed", { error: error instanceof Error ? error.message : String(error) });
+  });
+  rehydrateIntervals().catch((error) => {
+    log("interval rehydrate failed", { error: error instanceof Error ? error.message : String(error) });
   });
 });
