@@ -1,20 +1,3 @@
 [
-  {
-    "id": "088a69a3-baa2-4bb5-8977-22acf7de6536",
-    "name": "Test",
-    "channelIdRaw": "1003707523759",
-    "channelIdNormalized": "-1003707523759",
-    "chatTitle": "Test",
-    "chatType": "channel",
-    "createdAt": "2026-03-02T11:19:38.038Z"
-  },
-  {
-    "id": "c42c3e06-dbf7-4f42-8dda-d64ced71efef",
-    "name": "Zaiko test",
-    "channelIdRaw": "1003755526152",
-    "channelIdNormalized": "-1003755526152",
-    "chatTitle": "Zaiko test",
-    "chatType": "channel",
-    "createdAt": "2026-03-02T11:19:10.948Z"
-  }
+ 
 ]

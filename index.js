@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
+import sharp from "sharp";
 import {
   addChannel,
   addProduct,
@@ -32,6 +33,51 @@ const log = (message, meta) => {
   }
   console.log(`[api] ${message}`, meta);
 };
+
+function parseDataUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const match = text.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  return { mime: String(match[1] || "").toLowerCase(), base64: String(match[2] || "") };
+}
+
+async function optimizeImageBase64Lossless(imageBase64, imageMimeInput = "") {
+  const parsed = parseDataUrl(imageBase64);
+  if (!parsed) {
+    return { imageBase64: String(imageBase64 || "").trim(), imageMime: String(imageMimeInput || "").trim() };
+  }
+
+  const mime = parsed.mime || String(imageMimeInput || "").toLowerCase();
+  const input = Buffer.from(parsed.base64, "base64");
+  if (input.length === 0) {
+    return { imageBase64: String(imageBase64 || "").trim(), imageMime: String(imageMimeInput || "").trim() };
+  }
+
+  try {
+    let output = input;
+    let outputMime = mime;
+    if (mime === "image/png") {
+      output = await sharp(input).png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer();
+    } else if (mime === "image/webp") {
+      output = await sharp(input).webp({ lossless: true }).toBuffer();
+    } else {
+      // Keep JPEG/GIF/SVG/etc unchanged to avoid any quality loss.
+      return { imageBase64: String(imageBase64 || "").trim(), imageMime: String(imageMimeInput || mime).trim() };
+    }
+
+    if (output.length >= input.length) {
+      return { imageBase64: String(imageBase64 || "").trim(), imageMime: String(imageMimeInput || mime).trim() };
+    }
+
+    return {
+      imageBase64: `data:${outputMime};base64,${output.toString("base64")}`,
+      imageMime: outputMime
+    };
+  } catch {
+    return { imageBase64: String(imageBase64 || "").trim(), imageMime: String(imageMimeInput || mime).trim() };
+  }
+}
 
 function normalizePhoneNumber(value) {
   const raw = String(value || "").trim();
@@ -238,14 +284,15 @@ app.post("/api/products", async (req, res) => {
     return res.status(400).json({ ok: false, error: "name is required" });
   }
 
+  const optimized = await optimizeImageBase64Lossless(imageBase64, imageMime);
   const product = {
     id: crypto.randomUUID(),
     name: name.trim(),
     price: String(price ?? "").trim(),
     details: String(details ?? "").trim(),
     imageUrl: String(imageUrl ?? "").trim(),
-    imageBase64: String(imageBase64 ?? "").trim(),
-    imageMime: String(imageMime ?? "").trim(),
+    imageBase64: optimized.imageBase64,
+    imageMime: optimized.imageMime,
     imageFileName: String(imageFileName ?? "").trim(),
     createdAt: new Date().toISOString()
   };
@@ -259,13 +306,14 @@ app.put("/api/products/:id", async (req, res) => {
     return res.status(400).json({ ok: false, error: "name is required" });
   }
 
+  const optimized = await optimizeImageBase64Lossless(imageBase64, imageMime);
   const updated = await updateProduct(req.params.id, {
     name: name.trim(),
     price: String(price ?? "").trim(),
     details: String(details ?? "").trim(),
     imageUrl: String(imageUrl ?? "").trim(),
-    imageBase64: String(imageBase64 ?? "").trim(),
-    imageMime: String(imageMime ?? "").trim(),
+    imageBase64: optimized.imageBase64,
+    imageMime: optimized.imageMime,
     imageFileName: String(imageFileName ?? "").trim()
   });
 
