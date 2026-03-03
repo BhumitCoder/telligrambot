@@ -6,11 +6,13 @@ import {
   addChannel,
   addProduct,
   addSchedule,
+  addSubscribersBulk,
   deleteChannel,
   deleteProduct,
   deleteSchedule,
   getChannels,
   getProducts,
+  getSubscribers,
   getSchedules,
   updateProduct,
   updateSchedule
@@ -30,6 +32,24 @@ const log = (message, meta) => {
   }
   console.log(`[api] ${message}`, meta);
 };
+
+function normalizePhoneNumber(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const startsWithPlus = raw.startsWith("+");
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  return startsWithPlus ? `+${digits}` : digits;
+}
+
+function parseBulkNumbers(input) {
+  const text = String(input || "");
+  const parts = text.split(/[\s,;\n\r\t]+/).map((item) => normalizePhoneNumber(item)).filter(Boolean);
+  const unique = [...new Set(parts)];
+  const valid = unique.filter((num) => /^\+?\d{7,15}$/.test(num));
+  const invalid = unique.filter((num) => !/^\+?\d{7,15}$/.test(num));
+  return { valid, invalid };
+}
 
 function clearScheduleTimer(scheduleId) {
   const timer = scheduleTimers.get(scheduleId);
@@ -168,6 +188,43 @@ app.delete("/api/channels/:id", async (req, res) => {
     return res.status(404).json({ ok: false, error: "channel not found" });
   }
   return res.json({ ok: true });
+});
+
+app.get("/api/subscribers", async (req, res) => {
+  const channelId = String(req.query.channelId || "").trim();
+  const subscribers = await getSubscribers();
+  const list = channelId ? subscribers.filter((x) => x.channelIdNormalized === channelId) : subscribers;
+  return res.json({ ok: true, subscribers: list });
+});
+
+app.post("/api/subscribers/bulk", async (req, res) => {
+  const { channelId, numbers, rawNumbers } = req.body ?? {};
+  if (!channelId || typeof channelId !== "string") {
+    return res.status(400).json({ ok: false, error: "channelId is required" });
+  }
+
+  const payload =
+    Array.isArray(numbers) ? numbers.join("\n") : typeof rawNumbers === "string" ? rawNumbers : String(numbers || "");
+  const { valid, invalid } = parseBulkNumbers(payload);
+  if (valid.length === 0) {
+    return res.status(400).json({ ok: false, error: "No valid phone numbers found", invalid });
+  }
+
+  const channels = await getChannels();
+  const exists = channels.some((c) => c.channelIdNormalized === channelId);
+  if (!exists) {
+    return res.status(404).json({ ok: false, error: "Selected channel not found" });
+  }
+
+  const result = await addSubscribersBulk(channelId, valid);
+  return res.status(201).json({
+    ok: true,
+    channelId,
+    ...result,
+    invalid,
+    note:
+      "Numbers are stored for this channel. Telegram bot API cannot directly subscribe phone numbers to channels."
+  });
 });
 
 app.get("/api/products", async (_req, res) => {

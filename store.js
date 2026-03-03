@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 const PRODUCTS_FILE = path.join(__dirname, "data", "products.json");
 const CHANNELS_FILE = path.join(__dirname, "data", "channels.json");
 const SCHEDULES_FILE = path.join(__dirname, "data", "schedules.json");
+const SUBSCRIBERS_FILE = path.join(__dirname, "data", "subscribers.json");
 
 const log = (message, meta) => {
   if (meta === undefined) {
@@ -139,4 +140,37 @@ export async function deleteSchedule(id) {
   await saveSchedules(next);
   log("schedule delete requested", { id, removed: next.length !== schedules.length });
   return next.length !== schedules.length;
+}
+
+export async function getSubscribers() {
+  return readJsonArray(SUBSCRIBERS_FILE, "subscribers");
+}
+
+export async function saveSubscribers(subscribers) {
+  await writeJsonArray(SUBSCRIBERS_FILE, "subscribers", subscribers);
+}
+
+export async function addSubscribersBulk(channelIdNormalized, numbers) {
+  const subscribers = await getSubscribers();
+  const cleaned = [...new Set(numbers.map((x) => String(x || "").trim()).filter(Boolean))];
+  const now = new Date().toISOString();
+  const byKey = new Map(subscribers.map((row) => [`${row.channelIdNormalized}|${row.number}`, row]));
+  let inserted = 0;
+
+  for (const number of cleaned) {
+    const key = `${channelIdNormalized}|${number}`;
+    if (byKey.has(key)) continue;
+    byKey.set(key, {
+      id: `${channelIdNormalized}:${number}`,
+      channelIdNormalized,
+      number,
+      createdAt: now
+    });
+    inserted += 1;
+  }
+
+  const next = Array.from(byKey.values());
+  await saveSubscribers(next);
+  log("subscribers bulk add", { channelIdNormalized, requested: cleaned.length, inserted });
+  return { requested: cleaned.length, inserted, skipped: cleaned.length - inserted };
 }
